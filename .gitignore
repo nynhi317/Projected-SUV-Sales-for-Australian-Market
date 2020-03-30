@@ -1,129 +1,460 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+#%%Decomposition model
 
-# C extensions
-*.so
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import datetime as dt
+import statsmodels as sm
+import statsmodels.api as smt
+from statsmodels.tsa.arima_model import ARIMA 
+import holtwinters as hw
+from sklearn.metrics import mean_squared_error
+from math import sqrt
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+#%% Import data
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+SUVsales = pd.read_csv('SUVdata.csv')
+months = pd.to_datetime(SUVsales['Date'])
+sales = SUVsales['SUV ']
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+# Separate train test data set
+ytrain = sales[:144]
+xtrain = months[:144]
+ytest = sales[144:]
+xtest = months[144:]
+train = SUVsales[:144]
+test = SUVsales[144:]
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
 
-# Translations
-*.mo
-*.pot
+# Raw data plot
+plt.figure()
+plt.plot(xtrain,ytrain)
+plt.xlabel("Year")
+plt.ylabel("Sales")
+plt.title("Monthly SUV sales from 2003 to 2017")
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+fc = 36   # three years test set length
+fc2 = 12  # forecast length Jan-Dec 2018
+h = 12    # season length
 
-# Flask stuff:
-instance/
-.webassets-cache
+#%% Decomposition method
 
-# Scrapy stuff:
-.scrapy
 
-# Sphinx documentation
-docs/_build/
+# Initial trend-cycle estimate
+T = SUVsales['SUV '][:144].rolling(2, center = True).mean().rolling(12, center = True).mean() 
+T = T.shift(-1)
 
-# PyBuilder
-target/
+plt.figure()
+plt.plot(xtrain,T) 
+plt.title('Initial TREND estimate - Monthly SUV Sales') 
+plt.xlabel('Year') 
+plt.ylabel('Sales') 
 
-# Jupyter Notebook
-.ipynb_checkpoints
 
-# IPython
-profile_default/
-ipython_config.py
+# Multiplicative decomposition based on plot of raw data
+# Seasonal component
 
-# pyenv
-.python-version
+S_multiplicative = SUVsales[:144]['SUV ']/T
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
+plt.figure()
+plt.plot(xtrain,S_multiplicative)
+plt.title('SEASONAL MULTIPLICATIVE - Monthly SUV Sales') 
+plt.xlabel('Year') 
+plt.ylabel('Sales') 
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow
-__pypackages__/
+# Seasonally adjusted data
+safe_S = np.nan_to_num(S_multiplicative) 
+monthly_S = np.reshape(safe_S, (12,12)) 
+monthly_avg = np.nanmean(monthly_S, axis=0)   # Average of each month
 
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
+c = 12/np.sum(monthly_avg[:12])               # Normalised constant
+tiled_c = np.tile(c,12)
+month_indices = monthly_avg * tiled_c
+seasonal_component = np.tile(month_indices, 12)
 
-# SageMath parsed files
-*.sage.py
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+seasonally_adjusted = SUVsales[:144]['SUV ']/seasonal_component
 
-# Spyder project settings
-.spyderproject
-.spyproject
+plt.figure()
+plt.plot(xtrain,seasonally_adjusted)
+plt.title('Seasonally adjusted − Monthly SUV Sales')
+plt.xlabel('Year')
+plt.ylabel('Sales')
 
-# Rope project settings
-.ropeproject
+#%% Forecasting (Jan 2015 - Dec 2017)
+# https://www.otexts.org/fpp/6/6
+# Forecast seasonal component by taking last year estimate: seasonal naive method
 
-# mkdocs documentation
-/site
+Seasonal_component_forecast = np.tile(monthly_avg,3)
 
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
 
-# Pyre type checker
-.pyre/
+# Forecast seasonally adjusted component by Holt linear method
+
+Seasonally_adjusted_smoothed, Seasonally_adjusted_forecast, alpha, beta, rmse = hw.linear(seasonally_adjusted.tolist(), fc =fc)
+
+# Final forecast 
+Forecast_decomposition = Seasonal_component_forecast * Seasonally_adjusted_forecast
+Forecast_decomposition = pd.Series(Forecast_decomposition)
+
+
+#%% Plot forecasts
+
+Forecast = pd.DataFrame(SUVsales[144:]['Date'])
+Forecast['SUV'] = Forecast_decomposition.values
+
+plt.figure()
+plt.plot(months, sales, label="Original data")
+plt.plot(xtest,Forecast_decomposition, label="Forecast")
+plt.legend(loc = 'upper left')
+plt.title('Forecast - Monthly SUV Sales')
+plt.xlabel('Year')
+plt.ylabel('Sales')
+
+#%% RMSE
+RMSE = sqrt(mean_squared_error(ytest, Forecast_decomposition))
+
+print(RMSE)
+
+
+#%% Use the whole dataset to forecast 
+
+# Initial trend-cycle estimate
+T2 = SUVsales['SUV '].rolling(2, center = True).mean().rolling(12, center = True).mean() 
+T2 = T2.shift(-1)
+
+plt.figure()
+plt.plot(months,T2) 
+plt.title('Initial TREND estimate - Monthly SUV Sales') 
+plt.xlabel('Year') 
+plt.ylabel('Sales') 
+
+# Seasonal component
+
+S2_multiplicative = SUVsales['SUV ']/T2
+
+plt.figure()
+plt.plot(months,S2_multiplicative)
+plt.title('SEASONAL MULTIPLICATIVE - Monthly SUV Sales') 
+plt.xlabel('Year') 
+plt.ylabel('Sales') 
+
+# Seasonally adjusted data
+safe_S2 = np.nan_to_num(S2_multiplicative) 
+monthly_S2 = np.reshape(safe_S2, (15,12)) 
+monthly_avg2 = np.nanmean(monthly_S2, axis=0)   # Average of each month
+
+c2 = 12/np.sum(monthly_avg2[:12])               # Normalised constant
+tiled_c2 = np.tile(c2,12)
+month_indices2 = monthly_avg2 * tiled_c2
+seasonal_component2 = np.tile(month_indices2, 15)
+
+
+seasonally_adjusted2 = SUVsales['SUV ']/seasonal_component2
+
+plt.figure()
+plt.plot(months,seasonally_adjusted2)
+plt.title('Seasonally adjusted − Monthly SUV Sales')
+plt.xlabel('Year')
+plt.ylabel('Sales')
+
+#%% Forecasting (Jan 2018 - Dec 2018)
+# https://www.otexts.org/fpp/6/6
+# Forecast seasonal component by taking last year estimate: seasonal naive method
+
+Seasonal_component_forecast2 = np.tile(monthly_avg,1)
+
+
+# Forecast seasonally adjusted component by Holt linear method
+
+Seasonally_adjusted_smoothed2, Seasonally_adjusted_forecast2, alpha2, beta2, rmse2 = hw.linear(seasonally_adjusted2.tolist(), fc =fc2)
+
+# Final forecast 
+Forecast_decomposition2 = Seasonal_component_forecast2 * Seasonally_adjusted_forecast2
+Forecast_decomposition2 = pd.Series(Forecast_decomposition2)
+
+
+#%% Plot forecasts
+month_list = pd.read_csv('Months_2018')
+months_2018 = pd.to_datetime(months_list['Date'])
+
+plt.figure()
+plt.plot(months, sales, label="Original data")
+plt.plot(months_2018,Forecast_decomposition2, label="Forecast")
+plt.legend(loc = 'upper left')
+plt.title('Forecast - Monthly SUV Sales in 2018')
+plt.xlabel('Month')
+plt.ylabel('Sales')
+
+
+
+#%% SARIMA model
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import statsmodels.api as smapi
+import statsmodels.tsa.api as smt
+from statsmodels.tsa.arima_model import ARIMA
+
+### import data
+SUVsales = pd.read_csv('SUVdata.csv', parse_dates = [0], index_col = 0)
+
+#train test data set
+train = SUVsales[:144]
+test = SUVsales[144:]
+train.tail()
+
+# Raw data plot
+plt.plot(SUVsales)
+plt.xlabel("Year")
+plt.ylabel("Monthly SUV Sales")
+plt.title("Monthly SUV sales from 2003 to 2017")
+plt.show()
+
+# Use the statsmodels to obtain seasonally adjusted data
+decomp_obj = smapi.tsa.seasonal_decompose(train, model='multiplicative')
+decomp_obj.plot()
+
+season_adj = train - decomp_obj.seasonal
+season_adj.tail()
+plt.figure()          
+plt.plot(season_adj)
+plt.xlabel("Year")
+plt.ylabel("Monthly SUV Sales")
+plt.title("Monthly Seasonal Adjusted SUV sales from 2003 to 2015")
+plt.show()
+
+# First order difference - stationary
+diffed = season_adj.diff(1)[1:]
+diffed.head()
+
+smt.graphics.plot_acf(diffed, lags=24)
+smt.graphics.plot_pacf(diffed, lags=24)
+
+plt.show()
+
+#grid search best model
+from scipy.optimize import brute
+def objfunc(order, data):
+ try:
+     fit = ARIMA(data, order).fit()
+     return fit.aic
+ except:
+     return np.inf
+grid = (slice(0, 5, 1), slice(0,2,1), slice(0, 5, 1)) #p,d,q
+optimal = brute(objfunc, grid, args=(diffed.values,), finish=None)
+optimal
+
+# Forecasting
+optimal_converted = [int(x) for x in optimal]
+optimal_result = ARIMA(diffed, optimal_converted).fit()
+optimal_result.summary()
+
+
+# Plot forecast
+diff_forecast = optimal_result.predict()
+plt.plot(diffed, label = "Actual")
+plt.plot(diff_forecast, label = "Predicted")
+plt.xlabel("Year")
+plt.ylabel("Difference")
+plt.title("ARIMA - Monthly SUV sales from 2003 to 2015")
+plt.legend()
+plt.show()
+
+# check autocorrelation - ARIMA
+
+smt.graphics.plot_acf(diff_forecast, lags=48)
+smt.graphics.plot_pacf(diff_forecast, lags=48)
+
+plt.show()
+
+#optimise model using brute search
+#seasonal ARIMA 
+#non-seasonal (p,d,q) and seasonal parameters (P,D,Q) and finally the seasonal period.
+def objfunc2(order_full, data):
+    
+ converted_order = [int(x) for x in order_full]
+
+ try:
+     fit = smapi.tsa.statespace.SARIMAX(data, trend='n', order=order_full[:3], seasonal_order=converted_order[3:]).fit()
+     return fit.aic
+    
+ except:
+     return np.inf
+    
+grid = (slice(0, 5, 1), slice(0,2,1), slice(0, 5, 1), slice(0, 5, 1), slice(0,2,1), slice(0, 5, 1), slice(12,13,1))
+optimal = brute(objfunc2, grid, args=(train,), finish=None)
+
+converted_order = [int(x) for x in optimal]
+
+optimal_seasonal_model = smapi.tsa.statespace.SARIMAX(train, trend='n', order=converted_order[:3], seasonal_order=converted_order[3:],)
+
+results = optimal_seasonal_model.fit()
+print(results.summary())
+
+
+from sklearn.metrics import mean_squared_error
+
+rmse = np.sqrt(mean_squared_error(y_pred, test))
+rmse
+
+seasonal_forecast = results.predict(end="2018-12-1")
+y_pred = seasonal_forecast[144:]
+
+plt.plot(y_pred, label = "Forecast")
+plt.plot(train, label = "Train")
+plt.plot(test, label = "Test")
+plt.xlabel("Year")
+plt.ylabel("Monthly Sales")
+plt.title("SARIMA - Monthly SUV sales from 2015 to 2018")
+plt.legend()
+plt.show()
+
+# Check autocorrelation - SARIMA
+
+smt.graphics.plot_acf(seasonal_forecast, lags=48)
+smt.graphics.plot_pacf(seasonal_forecast, lags=48)
+plt.show()
+
+#%% Holt-Winters, Drift, Combination model
+
+### import data
+SUVsales = pd.read_csv('SUVdata.csv')
+months = pd.to_datetime(SUVsales['Date'])
+sales = SUVsales['SUV ']
+months2018 = pd.read_csv('2018date.csv')
+months_2018 = pd.to_datetime(months2018['Date'])
+
+
+#train test data set
+ytrain = sales[:144]
+xtrain = months[:144]
+ytest = sales[144:]
+xtest = months[144:]
+
+###raw data plot
+plt.figure()
+plt.plot(xtrain,ytrain)
+plt.xlabel("Date")
+plt.ylabel("Number Of New SUV Sales")
+plt.title("New SUV sales from 2003 to 2017")
+
+fc = 36   # three years forecasting
+h = 12    # season length
+
+ytrain_smoothed_mul, ytrain_forecast_vals, alpha, beta, gamma, rmse = hw.multiplicative(ytrain.tolist(), fc=fc, m=h)
+
+###Plot smoothed data
+plt.figure()
+plt.plot(months, sales, label="Original Data")
+plt.plot(np.hstack((xtrain,xtest)), ytrain_smoothed_mul[:-1], label="multiplicative")
+plt.legend(loc="upper left")
+plt.xlabel("Date")
+plt.ylabel("Number Of New SUV Sales")
+plt.title("New SUV sales from 2003 to 2017 _ Soomthed data")
+
+
+### plot forecasting against original data
+plt.figure()
+plt.plot(months, sales, label="Original data")
+plt.plot(xtest, ytrain_forecast_vals, label="forecast")
+plt.legend(loc="upper left")
+plt.xlabel("Date")
+plt.ylabel("Number Of New SUV Sales")
+plt.title("New SUV sales from 2003 to 2017 _ Holt-Winters forecast")
+
+
+###Calculate RMSE - forecast - test set
+from sklearn.metrics import mean_squared_error
+RMSE_Holtwinters = np.sqrt(mean_squared_error(ytrain_forecast_vals, ytest))
+
+###Forcast 2018 
+fc_f = 12 # 12 months of 2018
+h_f = 12
+y_smoothed_mul, y_forecast_vals, alpha_f, beta_f, gamma_f, rmse_f = hw.multiplicative(sales.tolist(), fc=fc_f, m=h_f)
+
+###Plot forecasting for 2018
+
+plt.figure()
+plt.plot(months,sales, label="Original data")
+plt.plot(months_2018, y_forecast_vals, label="forecast")
+plt.legend(loc="upper left")
+plt.xlabel("Date")
+plt.ylabel("Number Of New SUV Sales")
+plt.title("New SUV sales forecast 2018 _ Holt-Winters forecast")
+
+
+#drift method on train test set 
+y_t = ytrain.loc[len(ytrain)-1]
+m = (y_t - ytrain.loc[0])/(len(ytrain)-1)
+y_hat_drift = ytest.copy()
+h = np.linspace(0,len(y_hat_drift)-1, len(y_hat_drift))
+y_drift_forecast = y_t + m * h
+
+#Plot drift train
+plt.figure()
+plt.plot(months, sales, label="Original Data")
+plt.plot(xtest,y_drift_forecast, label='Drift Forecast')
+plt.legend(loc='best')
+plt.xlabel("Year")
+plt.ylabel("Number Of New SUV Sales")
+plt.title("New SUV sales from 2003 to 2017 _ Drift forecast")
+
+# RMSE 
+from sklearn.metrics import mean_squared_error
+RMSE_Drift = np.sqrt(mean_squared_error(y_drift_forecast, ytest))
+
+# Drift method forecast
+y_t_2018 = sales.loc[len(sales)-1]
+m_2018 = (y_t_2018 - sales.loc[0])/(len(sales)-1)
+y_hat_drift_2018 = y_forecast_vals.copy()
+h_2018 = np.linspace(0,len(y_hat_drift_2018)-1, len(y_hat_drift_2018))
+y_drift_forecast_2018 = y_t_2018 + m * h_2018
+    
+
+###Plot drift method forecast
+plt.figure()
+plt.plot(months, sales, label="Original Data")
+plt.plot(months_2018, y_drift_forecast_2018, label="forecast")
+plt.legend(loc="upper left")
+plt.xlabel("Date")
+plt.ylabel("Number Of New SUV Sales")
+plt.title("New SUV sales forecast 2018 _ Drift forecast")
+
+
+
+###Combination model
+###Forecast sale on test set from each models are exported to excel and reimported from combination
+Decomtestsetcsv = pd.read_csv('Decom testset.csv')
+hotlwintertestsetcsv = pd.read_csv('hotlwinter testset.csv')
+SARIMAtestsetcsv = pd.read_csv('SARIMA-testset.csv')
+
+testsetcombine = (Decomtestsetcsv + hotlwintertestsetcsv + SARIMAtestsetcsv )/3
+
+RMSE_combine = np.sqrt(mean_squared_error(testsetcombine, ytest))
+
+###Plot forecasting for 2015-2017 testset combination
+plt.figure()
+plt.plot(months,sales, label="Original data")
+plt.plot(xtest,testsetcombine , label="forecast_2015 - 2017")
+plt.legend(loc="upper left")
+plt.title('SUV 2015-2017 monthly sale forecast combination models')
+plt.xlabel("Date")
+plt.ylabel("Number Of New SUV Sales")
+
+
+###Forecast sale from each models are exported to excel and reimported for combination
+Decom2018csv = pd.read_csv('Decom2018.csv')
+Hw2018csv = pd.read_csv('Hw2018csv')
+SARIMA2018csv = pd.read_csv('SARIMA2018csv')
+
+combine = (Decom2018csv + Hw2018csv + SARIMA2018csv)/3
+
+###Plot forecasting for 2018
+plt.figure()
+plt.plot(months,sales, label="Original data")
+plt.plot(months_2018, combine, label="forecast_2018")
+plt.legend(loc="upper left")
+plt.title('SUV 2018 sale monthly forecast combination models')
+plt.xlabel("Date")
+plt.ylabel("Number Of New SUV Sales")
